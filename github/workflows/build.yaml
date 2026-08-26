@@ -1,0 +1,148 @@
+# GitHub Actions workflow converted from buildfapsvc.yaml (Azure Pipelines)
+# Adjust the placeholders and secrets (see comments) before enabling.
+name: Build and test .NET projects (full .NET Framework)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      dotNETSDKVersion:
+        description: '.NET SDK version to install (example: 6.0.x or 7.0.x)'
+        required: false
+        default: '6.0.x'
+
+jobs:
+  build:
+    name: Compile & Package
+    runs-on: windows-latest
+    env:
+      SOLUTION: '**/*.sln'
+      BUILD_PLATFORM: 'Any CPU'
+      BUILD_CONFIGURATION: 'Release'
+      BUILD_BUILDNUMBER: ${{ github.run_number }}
+      # Optionally set SOLUTION_NAME if you use it in Sonar project key/name
+      SOLUTION_NAME: '' # <-- set to your solution short name if required
+      ARTIFACTS_DIR: ${{ github.workspace }}\artifacts
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Checkout the InfraTemplate repository used in the Azure pipeline.
+      # If this is a different GitHub repository, provide an appropriate token with read access.
+      - name: Checkout InfraTemplate repo
+        uses: actions/checkout@v4
+        with:
+          repository: Heineken/ATC.SSP.InfraTemplate
+          path: Heineken.ATC.SSP.InfraTemplate
+          # If the repo is in another org or private, replace with a personal access token secret:
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }} # <-- provide PAT in repo secrets or change to GITHUB_TOKEN if same org
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: ${{ github.event.inputs.dotNETSDKVersion || '6.0.x' }}
+          include-prerelease: false
+
+      # Restore step. If you use Azure Artifacts feeds, configure authentication (nuget.config) before this step.
+      - name: dotnet restore
+        run: |
+          echo "Restoring packages..."
+          dotnet restore **/*.csproj
+        # If you need Azure Artifacts authentication, set up credentials here (e.g. using a PAT or nuget.config).
+        # Example: use a nuget.config committed to repo or configure with 'nuget sources add' prior to restore.
+
+      # Sonar branch name is set only for non-PR runs (mirrors Azure condition)
+      - name: Prepare SonarQube environment variable (non-PR)
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "SONAR_BRANCH=${{ github.ref_name }}" >> $GITHUB_ENV
+
+      # Install Sonar scanner (dotnet global tool) and run 'begin' only when Sonar secrets are provided.
+      - name: Install dotnet-sonarscanner
+        if: secrets.SONAR_TOKEN != '' && secrets.SONAR_HOST_URL != ''
+        run: dotnet tool install --global dotnet-sonarscanner
+        shell: pwsh
+
+      - name: SonarQube begin (dotnet)
+        if: secrets.SONAR_TOKEN != '' && secrets.SONAR_HOST_URL != ''
+        run: |
+          $env:Path += ";$env:USERPROFILE\.dotnet\tools"
+          $projectKey = "ATCSSP${{ env.SOLUTION_NAME }}"
+          $projectName = "Heineken.ATC.SSP.${{ env.SOLUTION_NAME }}"
+          $version = "${{ env.BUILD_BUILDNUMBER }}"
+          $reports = "${{ runner.temp }}\**\*.trx"
+          $beginArgs = @(
+            "begin",
+            "/k:$projectKey",
+            "/n:$projectName",
+            "/v:$version",
+            "/d:sonar.host.url=${{ secrets.SONAR_HOST_URL }}",
+            "/d:sonar.login=${{ secrets.SONAR_TOKEN }}",
+            "/d:sonar.sourceEncoding=UTF-8",
+            "/d:sonar.cs.vstest.reportsPaths=$reports",
+            "/d:sonar.qualitygate.wait=true",
+            "/d:sonar.verbose=true"
+          )
+          if ("${{ github.event_name }}" -ne "pull_request" -and "${{ env.SONAR_BRANCH }}" -ne "") {
+            $beginArgs += "/d:sonar.branch.name=${{ env.SONAR_BRANCH }}"
+          }
+          dotnet sonarscanner $beginArgs -NoProfile
+
+      - name: dotnet build (Func projects)
+        run: |
+          dotnet build **/Heineken.ATC.SSP.*.Func.csproj -c ${{ env.BUILD_CONFIGURATION }} /p:Version=${{ env.BUILD_BUILDNUMBER }}
+        shell: pwsh
+
+      - name: dotnet test (run tests, collect trx & coverage)
+        run: |
+          $ResultsDir = "${{ runner.temp }}\TestResults"
+          New-Item -ItemType Directory -Path $ResultsDir -Force | Out-Null
+          dotnet test **/*.Tests.csproj -c ${{ env.BUILD_CONFIGURATION }} --collect "Code Coverage" --logger "trx;LogFileName=tests.trx" --results-directory $ResultsDir
+        shell: pwsh
+
+      - name: SonarQube end (dotnet)
+        if: secrets.SONAR_TOKEN != '' && secrets.SONAR_HOST_URL != ''
+        run: |
+          $env:Path += ";$env:USERPROFILE\.dotnet\tools"
+          dotnet sonarscanner end /d:sonar.login=${{ secrets.SONAR_TOKEN }}
+        shell: pwsh
+
+      # Publish artifacts only when run is not a Pull Request (mirrors original pipeline conditions)
+      - name: dotnet publish (publish web projects)
+        if: github.event_name != 'pull_request'
+        run: |
+          $out = "${{ env.ARTIFACTS_DIR }}"
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          # Publish every project (adjust pattern if you need only web projects)
+          Get-ChildItem -Path . -Recurse -Filter *.csproj | ForEach-Object {
+            Write-Host "Publishing $($_.FullName)"
+            dotnet publish $_.FullName -c $env:BUILD_CONFIGURATION --no-build -o $out
+          }
+        shell: pwsh
+
+      - name: Upload WEB artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: WEB
+          path: ${{ env.ARTIFACTS_DIR }}
+
+      - name: Upload ARM artifact from InfraTemplate
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARM
+          path: Heineken.ATC.SSP.InfraTemplate/ARM
+          # If this path may not exist, the action will fail; ensure the path is correct or adjust to optional upload.
+
+      - name: Upload test results (trx) and code coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: TestResults
+          path: ${{ runner.temp }}\TestResults
