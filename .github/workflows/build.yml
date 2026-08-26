@@ -13,7 +13,7 @@ on:
       dotNETSDKVersion:
         description: '.NET SDK version to install (example: 6.0.x or 7.0.x)'
         required: false
-        default: '6.0.x'
+        default: '8.0.x'
 
 jobs:
   build:
@@ -38,10 +38,10 @@ jobs:
       - name: Checkout InfraTemplate repo
         uses: actions/checkout@v4
         with:
-          repository: Heineken/ATC.SSP.InfraTemplate
-          path: Heineken.ATC.SSP.InfraTemplate
+          repository: emtwentyco/rev1.0
+          path: rev1.0
           # If the repo is in another org or private, replace with a personal access token secret:
-          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }} # <-- provide PAT in repo secrets or change to GITHUB_TOKEN if same org
+          token: ${{ secrets.GITHUB_TOKEN }} # <-- provide PAT in repo secrets or change to GITHUB_TOKEN if same org
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v3
