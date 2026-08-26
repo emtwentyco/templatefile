@@ -1,0 +1,54 @@
+# Deploy packaged Artifact to Flex Consumption Azure Functions in Development environment.
+parameters:
+  - name: functionsAppName
+    type: string
+
+stages:
+- stage: Deploy_to_Development
+  condition: and(succeeded(), eq(variables['build.sourceBranch'], 'refs/heads/develop'))
+  jobs:    
+  - deployment: Deploy_to_Development
+    environment: 'Development'
+    displayName: 'Deploy to Development'
+    continueOnError: false
+    variables:
+      - name: AFRAEnvironment 
+        value: 'D'
+      - name: ARMAspNetCoreEnvironment 
+        value: 'development'
+      - group: 'Secrets Dev'
+    strategy:
+       runOnce:
+        deploy:
+          steps:
+          - task: DownloadBuildArtifacts@0
+            inputs:
+              buildType: 'current'
+              downloadType: 'single'
+              artifactName: 'WEB'
+              downloadPath: '$(System.ArtifactsDirectory)'
+          - task: DownloadBuildArtifacts@0
+            inputs:
+              buildType: 'current'
+              downloadType: 'single'
+              artifactName: 'ARM'
+              downloadPath: '$(System.ArtifactsDirectory)'
+          - task: AzureResourceGroupDeployment@2
+            displayName: 'Create FAP for microservice'
+            inputs:
+              azureSubscription: 'HEI-TOOLCHAIN-INNOV-TST'
+              action: 'Create Or Update Resource Group'
+              resourceGroupName: '$(ARMResourceGroupName)'
+              location: '$(ARMResourceGroupLocation)'
+              templateLocation: 'Linked artifact'
+              csmFile: '$(System.ArtifactsDirectory)/ARM/azuredeploy.fapsvc.json'
+              overrideParameters: '-serviceBusConnectionString "$(ServiceBusConnectionString)" -afraAgency "$(AFRATagAgency)" -afraCostCenter "$(AFRATagCostCenter)" -afraDepartment "$(AFRATagDepartment)" -afraOpCo "$(AFRATagOpCo)" -afraProject "$(AFRATagProject)" -afraRequestItem "$(AFRATagRequestItem)" -afraSNEnvironment "$(AFRATagSNEnvironment)" -afraTagSet "$(AFRATagTagSet)" -afraTimeToLive "$(AFRATagTimeToLive)" -afraUserName "$(AFRATagUserName)" -appInsightsName "$(ARMAppInsightsName)" -functionPlanName "${{ parameters.functionsAppName }}-FPS" -functionAppName "${{ parameters.functionsAppName }}" -storageAccountName "$(StorageAccountName)" -environment "$(ARMAspNetCoreEnvironment)" -virtualNetworkName "$(ARMVirtualNetworkName)" -subnetName "$(ARMSubnetName)" -sspName "$(ARMSSPName)"'
+              deploymentMode: 'Incremental'
+          - task: AzureFunctionApp@2
+            inputs:
+              connectedServiceNameARM: 'HEI-TOOLCHAIN-INNOV-TST'
+              appType: 'functionAppLinux'
+              isFlexConsumption: true
+              appName: '${{ parameters.functionsAppName }}'
+              package: '$(System.ArtifactsDirectory)/WEB/Heineken.ATC.SSP.$(SolutionName).Func.zip'
+              appSettings: '-VaultURI $(VaultURI)'

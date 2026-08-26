@@ -1,0 +1,56 @@
+# Deploy packaged Artifact to Flex Consumption Azure Functions in Acceptance environment.
+parameters:
+  - name: functionsAppName
+    type: string
+
+stages:
+- stage: Deploy_to_Acceptance
+  condition: and(succeeded(), eq(variables['build.sourceBranch'], 'refs/heads/master'))
+  dependsOn:
+  - Build  
+  jobs:    
+  - deployment: Deploy_to_Acceptance
+    environment: 'Acceptance'
+    displayName: 'Deploy to Acceptance'
+    continueOnError: false
+    variables:
+      - name: AFRAEnvironment 
+        value: 'A'
+      - name: ARMAspNetCoreEnvironment 
+        value: 'development'
+      - group: 'Secrets Acc'
+    strategy:
+       runOnce:
+        deploy:      
+          steps:
+          - task: DownloadBuildArtifacts@0
+            inputs:
+              buildType: 'current'
+              downloadType: 'single'
+              artifactName: 'WEB'
+              downloadPath: '$(System.ArtifactsDirectory)'
+          - task: DownloadBuildArtifacts@0
+            inputs:
+              buildType: 'current'
+              downloadType: 'single'
+              artifactName: 'ARM'
+              downloadPath: '$(System.ArtifactsDirectory)'
+          - task: AzureResourceGroupDeployment@2
+            displayName: 'Create FAP for microservice'
+            inputs:
+              azureSubscription: 'Triple POD HEIWAY'
+              action: 'Create Or Update Resource Group'
+              resourceGroupName: '$(ARMResourceGroupName)'
+              location: '$(ARMResourceGroupLocation)'
+              templateLocation: 'Linked artifact'
+              csmFile: '$(System.ArtifactsDirectory)/ARM/azuredeploy.fapsvc.json'
+              overrideParameters: '-serviceBusConnectionString "$(ServiceBusConnectionString)" -afraAgency "$(AFRATagAgency)" -afraCostCenter "$(AFRATagCostCenter)" -afraDepartment "$(AFRATagDepartment)" -afraOpCo "$(AFRATagOpCo)" -afraProject "$(AFRATagProject)" -afraRequestItem "$(AFRATagRequestItem)" -afraSNEnvironment "$(AFRATagSNEnvironment)" -afraTagSet "$(AFRATagTagSet)" -afraTimeToLive "$(AFRATagTimeToLive)" -afraUserName "$(AFRATagUserName)" -appInsightsName "$(ARMAppInsightsName)" -functionPlanName "${{ parameters.functionsAppName }}-FPS" -functionAppName "${{ parameters.functionsAppName }}" -storageAccountName "$(StorageAccountNameAcc)" -environment "$(ARMAspNetCoreEnvironment)" -virtualNetworkName "$(ARMVirtualNetworkName)" -subnetName "$(ARMSubnetName)" -sspName "$(ARMSSPName)"'
+              deploymentMode: 'Incremental'
+          - task: AzureFunctionApp@2
+            inputs:
+              connectedServiceNameARM: 'Triple POD HEIWAY'
+              appType: 'functionAppLinux'
+              isFlexConsumption: true
+              appName: '${{ parameters.functionsAppName }}'
+              package: '$(System.ArtifactsDirectory)/WEB/Heineken.ATC.SSP.$(SolutionName).Func.zip'
+              appSettings: '-VaultURI $(VaultURI)'               

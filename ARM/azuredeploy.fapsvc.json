@@ -1,0 +1,255 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "functionPlanName": {
+            "type": "string"
+        },
+        "functionAppName": {
+            "type": "string"
+        },
+        "functionAppRuntimeVersion": {
+            "type": "string",
+            "defaultValue": "10.0",
+            "allowedValues": [
+            "8.0",
+            "9.0",
+            "10.0"
+            ]
+        },
+        "storageAccountName": {
+            "type": "string"
+        },
+        "appInsightsName": {
+            "type": "string"
+        },
+        "targetWorkerCount": {
+            "type": "string",
+            "defaultValue": "0"
+        },
+        "targetWorkerSizeId": {
+            "type": "string",
+            "defaultValue": "0"
+        },
+        "maximumElasticWorkerCount": {
+            "type": "string",
+            "defaultValue": "1"
+        },
+        "serviceBusConnectionString": {
+            "type": "secureString"
+        },
+        "virtualNetworkName": {
+            "type": "string"
+        },
+        "subnetName": {
+            "type": "string"
+        },
+        "environment": {
+            "type": "string",
+            "allowedValues": [
+            "development",
+            "acceptance",
+            "production"
+            ]
+        },
+        "afraAgency": {
+            "type": "string",
+            "defaultValue": "Agile Toolchain"
+        },
+        "afraCostCenter": {
+            "type": "string",
+            "defaultValue": "Agile Toolchain"
+        },
+        "afraDepartment": {
+            "type": "string",
+            "defaultValue": "Agile Toolchain"
+        },
+        "afraOpCo": {
+            "type": "string",
+            "defaultValue": ""
+        },
+        "afraProject": {
+            "type": "string",
+            "defaultValue": "Agile Toolchain"
+        },
+        "afraRequestItem": {
+            "type": "string",
+            "defaultValue": ""
+        },
+        "afraSNEnvironment": {
+            "type": "string",
+            "defaultValue": ""
+        },
+        "afraTagSet": {
+            "type": "string",
+            "defaultValue": "manual tagging"
+        },
+        "afraTimeToLive": {
+            "type": "string",
+            "defaultValue": "3600"
+        },
+        "afraUserName": {
+            "type": "string",
+            "defaultValue": ""
+        },
+        "sspName": {
+            "type": "string",
+            "minLength": 1
+        }
+    },
+    "variables": {
+        "resourceToken": "[toLower(uniqueString(subscription().id, resourceGroup().name, resourceGroup().location))]",
+        "deploymentStorageContainerName": "[toLower(concat('app-package-', take(parameters('functionAppName'), 32), take(variables('resourceToken'), 7)))]",
+        "storageAccountResourceId": "[format('/subscriptions/{0}/resourceGroups/{1}/providers/Microsoft.Storage/storageAccounts/{2}', subscription().subscriptionId, resourceGroup().name, parameters('storageAccountName'))]",
+        "storageBlobDataOwnerRoleDefinitionId": "b7e6dc6d-f1e8-4753-8033-0f276bb0955b",
+        "storageAccountName": "[toLower(parameters('storageAccountName'))]",
+        "tags": {
+            "agency": "[parameters('afraAgency')]",
+            "costCenter": "[parameters('afraCostCenter')]",
+            "department": "[parameters('afraDepartment')]",
+            "opCo": "[parameters('afraOpCo')]",
+            "project": "[parameters('afraProject')]",
+            "requestItem": "[parameters('afraRequestItem')]",
+            "snEnvironment": "[parameters('afraSNEnvironment')]",
+            "tagSet": "[parameters('afraTagSet')]",
+            "timeToLive": "[parameters('afraTimeToLive')]",
+            "userName": "[parameters('afraUserName')]"
+        }
+    },
+    "resources": [
+        {
+            "type": "Microsoft.Web/sites",
+            "apiVersion": "2023-12-01",
+            "name": "[parameters('functionAppName')]",
+            "location": "[resourceGroup().location]",
+            "kind": "functionapp,linux",
+            "identity": {
+                "type": "SystemAssigned"
+            },
+            "dependsOn": [
+                        "[resourceId('Microsoft.Web/serverfarms', parameters('functionPlanName'))]"
+            ],
+            "tags": {
+                "hidden-link: /app-insights-resource-id": "[resourceId('Microsoft.Insights/components', parameters('appInsightsName'))]",
+                "agency": "[variables('tags').agency]",
+				"costCenter": "[variables('tags').costCenter]",
+				"department": "[variables('tags').department]",
+				"opCo": "[variables('tags').opCo]",
+				"project": "[variables('tags').project]",
+				"requestItem": "[variables('tags').requestItem]",
+				"snEnvironment": "[variables('tags').snEnvironment]",
+				"tagSet": "[variables('tags').tagSet]",
+				"timeToLive": "[variables('tags').timeToLive]",
+				"userName": "[variables('tags').userName]",
+				"resourceGroup": "[resourceGroup().name]"
+            },
+            "properties": {
+                "name": "[parameters('functionAppName')]",
+                "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', parameters('functionPlanName'))]",
+                "functionAppConfig": {
+                    "deployment": {
+                        "storage": {
+                            "type": "blobContainer",
+                            "value": "[concat(reference(variables('storageAccountResourceId'), '2022-05-01').primaryEndpoints.blob, variables('deploymentStorageContainerName'))]",
+                            "authentication": {
+                                "type": "StorageAccountConnectionString",
+                                "storageAccountConnectionStringName": "DEPLOYMENT_STORAGE_CONNECTION_STRING"
+                            }
+                        }
+                    },
+                    "scaleAndConcurrency": {
+                        "maximumInstanceCount": 100,
+                        "instanceMemoryMB": "2048"
+                    },
+                    "runtime": {
+                        "name": "dotnet-isolated",
+                        "version": "[parameters('functionAppRuntimeVersion')]"
+                    }
+                },
+                "siteConfig": {
+                    "appSettings": [
+                        {
+                            "name": "DEPLOYMENT_STORAGE_CONNECTION_STRING",
+                            "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix={2}', parameters('storageAccountName'), listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2022-05-01').keys[0].value, environment().suffixes.storage)]"
+                        },
+                        {
+                            "name": "AzureWebJobsStorage",
+                            "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix={2}', parameters('storageAccountName'), listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2022-05-01').keys[0].value, environment().suffixes.storage)]"
+                        },
+                        {
+                            "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+                            "value": "[reference(resourceId('Microsoft.Insights/components', parameters('appInsightsName')), '2020-02-02').ConnectionString]"
+                        },
+                        {
+                            "name": "AzureWebJobsStorage__accountName",
+                            "value": "[parameters('storageAccountName')]"
+                        },
+                        {
+                            "name": "ServiceBusConnectionString",
+                            "value": "[parameters('serviceBusConnectionString')]"
+                        },
+                        {
+                            "name": "environment",
+                            "value": "[parameters('environment')]"
+                        },
+                        {
+                            "name": "FUNCTIONS_EXTENSION_VERSION",
+                            "value": "~4"
+                        }
+                    ]
+                },
+                "clientAffinityEnabled": false,
+                "virtualNetworkSubnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('virtualNetworkName'), parameters('subnetName'))]",
+                "siteScopedCertificatesEnabled": true,
+                "publicNetworkAccess": "Enabled",
+                "vnetRouteAllEnabled": true,
+                "httpsOnly": true
+            }
+        },
+        {
+            "type": "Microsoft.Web/serverfarms",
+            "apiVersion": "2023-12-01",
+            "name": "[parameters('functionPlanName')]",
+            "location": "[resourceGroup().location]",
+            "kind": "functionapp",
+            "properties": {
+                "targetWorkerCount": "[parameters('targetWorkerCount')]",
+                "targetWorkerSizeId": "[parameters('targetWorkerSizeId')]",
+                "maximumElasticWorkerCount": "[parameters('maximumElasticWorkerCount')]",
+                "reserved": true,
+                "zoneRedundant": false
+            },
+            "sku": {
+                "name": "FC1",
+                "tier": "FlexConsumption"
+            },
+            "tags": {
+                "agency": "[variables('tags').agency]",
+				"costCenter": "[variables('tags').costCenter]",
+				"department": "[variables('tags').department]",
+				"opCo": "[variables('tags').opCo]",
+				"project": "[variables('tags').project]",
+				"requestItem": "[variables('tags').requestItem]",
+				"snEnvironment": "[variables('tags').snEnvironment]",
+				"tagSet": "[variables('tags').tagSet]",
+				"timeToLive": "[variables('tags').timeToLive]",
+				"userName": "[variables('tags').userName]",
+				"resourceGroup": "[resourceGroup().name]",
+                "displayName": "FAPHostingPlan"
+            }
+        },
+        {
+            "type": "Microsoft.Storage/storageAccounts/blobServices",
+            "apiVersion": "2022-05-01",
+            "name": "[format('{0}/{1}', parameters('storageAccountName'), 'default')]"
+        },
+        {
+            "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+            "apiVersion": "2022-05-01",
+            "name": "[format('{0}/{1}/{2}', parameters('storageAccountName'), 'default', variables('deploymentStorageContainerName'))]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Storage/storageAccounts/blobServices', parameters('storageAccountName'), 'default')]"
+                ]
+        }
+    ]
+}

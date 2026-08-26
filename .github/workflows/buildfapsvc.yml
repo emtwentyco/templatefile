@@ -1,0 +1,167 @@
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      dotnetSDK:
+        required: false
+        type: string
+        default: 8.0.x
+      solutionName:
+        required: true
+        type: string
+      azureArtifactsFeedUrl:
+        description: Azure Artifacts NuGet v3 feed URL
+        required: true
+        type: string
+      githubPackagesOwner:
+        description: GitHub user or organization that owns the package
+        required: false
+        type: string
+        default: emtwentyco
+      nugetPackagePath:
+        description: Optional path to a .nupkg file to publish to GitHub Packages
+        required: false
+        type: string
+        default: ''
+    secrets:
+      SONAR_HOST_URL:
+        required: true
+      SONAR_TOKEN:
+        required: true
+      AZURE_DEVOPS_PAT:
+        required: true
+      GITHUB_PACKAGES_TOKEN:
+        description: GitHub token with packages write permission
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Compile and package
+    runs-on: windows-latest
+    env:
+      BUILD_CONFIGURATION: Release
+      PACKAGE_NAME: Heineken.ATC.SSP.${{ inputs.solutionName }}.Func.zip
+    steps:
+      - name: Check out self
+        uses: actions/checkout@v4
+
+      - name: Check out infra template
+        uses: actions/checkout@v4
+        with:
+          repository: emtwentyco/templatefile
+          ref: main
+          path: templatefile
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ inputs.dotnetSDK }}
+
+      - name: Install SonarScanner for .NET
+        shell: pwsh
+        run: dotnet tool install --global dotnet-sonarscanner
+
+      - name: Set SonarQube branch
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: "\"SONARQUBE_BRANCH=${{ github.ref_name }}\" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append"
+
+      - name: Begin SonarQube analysis
+        shell: pwsh
+        env:
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          $arguments = @(
+            'begin'
+            '/k:ATCSSP_${{ inputs.solutionName }}'
+            '/n:Heineken.ATC.SSP.${{ inputs.solutionName }}'
+            '/v:${{ github.run_number }}'
+            "/d:sonar.host.url=$env:SONAR_HOST_URL"
+            "/d:sonar.token=$env:SONAR_TOKEN"
+            '/d:sonar.sourceEncoding=UTF-8'
+            '/d:sonar.cs.vstest.reportsPaths=TestResults/**/*.trx'
+            '/d:sonar.qualitygate.wait=true'
+            '/d:sonar.verbose=true'
+          )
+          if ($env:SONARQUBE_BRANCH) {
+            $arguments += "/d:sonar.branch.name=$env:SONARQUBE_BRANCH"
+          }
+          dotnet-sonarscanner @arguments
+
+      - name: Configure Azure Artifacts NuGet feed
+        shell: pwsh
+        env:
+          AZURE_ARTIFACTS_FEED_URL: ${{ inputs.azureArtifactsFeedUrl }}
+          AZURE_DEVOPS_PAT: ${{ secrets.AZURE_DEVOPS_PAT }}
+        run: |
+          dotnet nuget add source "$env:AZURE_ARTIFACTS_FEED_URL" `
+            --name AzureArtifacts `
+            --username github-actions `
+            --password "$env:AZURE_DEVOPS_PAT" `
+            --store-password-in-clear-text
+
+      - name: Configure GitHub Packages NuGet feed
+        shell: pwsh
+        env:
+          GITHUB_PACKAGES_OWNER: ${{ inputs.githubPackagesOwner }}
+          GITHUB_PACKAGES_TOKEN: ${{ secrets.GITHUB_PACKAGES_TOKEN || github.token }}
+        run: |
+          dotnet nuget add source "https://nuget.pkg.github.com/$env:GITHUB_PACKAGES_OWNER/index.json" `
+            --name GitHubPackages `
+            --username "${{ github.actor }}" `
+            --password "$env:GITHUB_PACKAGES_TOKEN" `
+            --store-password-in-clear-text
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Publish NuGet package to GitHub Packages
+        if: inputs.nugetPackagePath != ''
+        shell: pwsh
+        env:
+          GITHUB_PACKAGES_OWNER: ${{ inputs.githubPackagesOwner }}
+          GITHUB_PACKAGES_TOKEN: ${{ secrets.GITHUB_PACKAGES_TOKEN || github.token }}
+        run: |
+          dotnet nuget push "${{ inputs.nugetPackagePath }}" `
+            --source "https://nuget.pkg.github.com/$env:GITHUB_PACKAGES_OWNER/index.json" `
+            --api-key "$env:GITHUB_PACKAGES_TOKEN" `
+            --skip-duplicate
+
+      - name: Build Function App
+        run: dotnet build '**/Heineken.ATC.SSP.*.Func.csproj' --configuration "$BUILD_CONFIGURATION" --no-restore /property:Version="${GITHUB_RUN_NUMBER}"
+
+      - name: Test
+        run: dotnet test '**/*.Tests.csproj' --configuration "$BUILD_CONFIGURATION" --no-build --logger trx --collect "XPlat Code Coverage"
+
+      - name: End SonarQube analysis
+        if: always()
+        shell: pwsh
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: dotnet-sonarscanner end /d:sonar.token="$env:SONAR_TOKEN"
+
+      - name: Publish Function App
+        run: dotnet publish --configuration "$BUILD_CONFIGURATION" --no-build --output publish --property:Version="${GITHUB_RUN_NUMBER}"
+
+      - name: Create deployment package
+        run: (cd publish && zip -r "../$PACKAGE_NAME" .)
+
+      - name: Upload WEB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WEB
+          path: ${{ env.PACKAGE_NAME }}
+          if-no-files-found: error
+
+      - name: Upload ARM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARM
+          path: templatefile/ARM
+          if-no-files-found: error

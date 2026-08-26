@@ -1,0 +1,72 @@
+name: Deploy Function App to Development
+
+on:
+  workflow_call:
+    inputs:
+      functionsAppName:
+        required: true
+        type: string
+      solutionName:
+        required: true
+        type: string
+    secrets:
+      AZURE_CLIENT_ID: { required: true }
+      AZURE_TENANT_ID: { required: true }
+      AZURE_SUBSCRIPTION_ID: { required: true }
+      ARM_RESOURCE_GROUP_NAME: { required: true }
+      ARM_RESOURCE_GROUP_LOCATION: { required: true }
+      ARM_APP_INSIGHTS_NAME: { required: true }
+      ARM_VIRTUAL_NETWORK_NAME: { required: true }
+      ARM_SUBNET_NAME: { required: true }
+      ARM_SSP_NAME: { required: true }
+      SERVICE_BUS_CONNECTION_STRING: { required: true }
+      STORAGE_ACCOUNT_NAME: { required: true }
+      VAULT_URI: { required: true }
+      AFRA_AGENCY: { required: false }
+      AFRA_COST_CENTER: { required: false }
+      AFRA_DEPARTMENT: { required: false }
+      AFRA_OPCO: { required: false }
+      AFRA_PROJECT: { required: false }
+      AFRA_REQUEST_ITEM: { required: false }
+      AFRA_SN_ENVIRONMENT: { required: false }
+      AFRA_TAG_SET: { required: false }
+      AFRA_TIME_TO_LIVE: { required: false }
+      AFRA_USER_NAME: { required: false }
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: Deploy to Development
+    runs-on: ubuntu-latest
+    environment: Development
+    env:
+      PACKAGE_NAME: Heineken.ATC.SSP.${{ inputs.solutionName }}.Func.zip
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: WEB
+      - uses: actions/download-artifact@v4
+        with:
+          name: ARM
+          path: ARM
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Deploy infrastructure
+        uses: azure/cli@v2
+        env:
+          SERVICE_BUS_CONNECTION_STRING: ${{ secrets.SERVICE_BUS_CONNECTION_STRING }}
+        with:
+          inlineScript: |
+            az deployment group create --resource-group "${{ secrets.ARM_RESOURCE_GROUP_NAME }}" --location "${{ secrets.ARM_RESOURCE_GROUP_LOCATION }}" --template-file ARM/azuredeploy.fapsvc.json --mode Incremental --parameters functionPlanName="${{ inputs.functionsAppName }}-FPS" functionAppName="${{ inputs.functionsAppName }}" storageAccountName="${{ secrets.STORAGE_ACCOUNT_NAME }}" appInsightsName="${{ secrets.ARM_APP_INSIGHTS_NAME }}" serviceBusConnectionString="$SERVICE_BUS_CONNECTION_STRING" environment=development virtualNetworkName="${{ secrets.ARM_VIRTUAL_NETWORK_NAME }}" subnetName="${{ secrets.ARM_SUBNET_NAME }}" sspName="${{ secrets.ARM_SSP_NAME }}" afraAgency="${{ secrets.AFRA_AGENCY }}" afraCostCenter="${{ secrets.AFRA_COST_CENTER }}" afraDepartment="${{ secrets.AFRA_DEPARTMENT }}" afraOpCo="${{ secrets.AFRA_OPCO }}" afraProject="${{ secrets.AFRA_PROJECT }}" afraRequestItem="${{ secrets.AFRA_REQUEST_ITEM }}" afraSNEnvironment="${{ secrets.AFRA_SN_ENVIRONMENT }}" afraTagSet="${{ secrets.AFRA_TAG_SET }}" afraTimeToLive="${{ secrets.AFRA_TIME_TO_LIVE }}" afraUserName="${{ secrets.AFRA_USER_NAME }}"
+      - name: Deploy Function App
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ inputs.functionsAppName }}
+          package: ${{ env.PACKAGE_NAME }}
+          app-settings: -VaultURI "${{ secrets.VAULT_URI }}"

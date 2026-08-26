@@ -1,0 +1,84 @@
+# Build and test .NET projects targeting the full .NET Framework.
+parameters:
+  - name: dotNETSDKVersion
+    type: string
+
+stages:
+- stage: Build
+  jobs:
+  - job: Compile
+    displayName: Compile & Package
+    continueOnError: false
+    variables:
+      solution: '**/*.sln'
+      buildPlatform: 'Any CPU'
+      buildConfiguration: 'Release'
+    steps:
+    - checkout: self
+    - checkout: Heineken.ATC.SSP.InfraTemplate
+    - task: UseDotNet@2
+      displayName: "Install .NET Core SDK"
+      inputs:
+        version: ${{ parameters.dotNETSDKVersion }}
+        performMultiLevelLookup: true
+    - task: DotNetCoreCLI@2
+      displayName: 'dotnet restore'
+      inputs:
+        command: restore
+        projects: '**/*.csproj'
+        vstsFeed: '40803a46-83f2-45b1-9079-110577790ae7'
+    - powershell: 'Write-Host ("##vso[task.setvariable variable=SonarQubeBranch;]sonar.branch.name=$(Build.SourceBranchName)  ")'
+      displayName: 'PowerShell Script'
+      condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+    - task: VisualStudioTestPlatformInstaller@1
+      displayName: Install Visual Studio TestPlatform
+      inputs:
+        versionSelector: latestStable
+    - task: SonarQubePrepare@8
+      inputs:
+        SonarQube: 'Heineken SonarQube'
+        scannerMode: 'dotnet'
+        projectKey: 'ATCSSP$(SolutionName)'
+        projectName: 'Heineken.ATC.SSP.$(SolutionName)'
+        projectVersion: '$(Build.BuildNumber)'
+        extraProperties: |
+          sonar.sourceEncoding=UTF-8
+          sonar.cs.vstest.reportsPaths=$(Agent.TempDirectory)/**/*.trx
+          sonar.qualitygate.wait=true
+          sonar.verbose=true
+    - task: DotNetCoreCLI@2
+      displayName: 'dotnet build'
+      inputs:
+        projects: '**/Heineken.ATC.SSP.*.Func.csproj'
+        arguments: '--configuration $(BuildConfiguration) /property:Version=$(Build.BuildNumber)'
+    - task: DotNetCoreCLI@2
+      displayName: 'dotnet test'
+      inputs:
+        command: test
+        projects: '**/*.Tests.csproj'
+        arguments: '--configuration $(BuildConfiguration) --collect "Code Coverage" --logger trx'
+    - task: SonarQubeAnalyze@8
+    - task: SonarQubePublish@8
+      inputs:
+        pollingTimeoutSec: "300"
+    - task: DotNetCoreCLI@2
+      displayName: 'dotnet publish'
+      inputs:
+        command: 'publish'
+        publishWebProjects: true
+        arguments: '--configuration $(buildConfiguration) --no-build  --output $(build.artifactstagingdirectory)'
+        workingDirectory: ''
+      condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Artifact: WEB'
+      inputs:
+        PathtoPublish: '$(build.artifactStagingDirectory)'
+        ArtifactName: WEB
+      condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Artifact: ARM'
+      inputs:
+        PathtoPublish: 'Heineken.ATC.SSP.InfraTemplate/ARM'
+        ArtifactName: 'ARM'
+        publishLocation: 'Container'
+      condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
